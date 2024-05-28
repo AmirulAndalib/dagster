@@ -98,7 +98,13 @@ class SensorType(Enum):
     MULTI_ASSET = "MULTI_ASSET"
     FRESHNESS_POLICY = "FRESHNESS_POLICY"
     AUTO_MATERIALIZE = "AUTO_MATERIALIZE"
+    ASSET_AUTOMATION = "ASSET_AUTOMATION"
     UNKNOWN = "UNKNOWN"
+
+    @property
+    def is_handled_by_asset_daemon(self) -> bool:
+        # these "sensors" are currently evaluated by the asset daemon and not the sensor daemon
+        return self in (SensorType.ASSET_AUTOMATION, SensorType.AUTO_MATERIALIZE)
 
 
 DEFAULT_SENSOR_DAEMON_INTERVAL = 30
