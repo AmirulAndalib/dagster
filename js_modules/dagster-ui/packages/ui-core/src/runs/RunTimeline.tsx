@@ -46,6 +46,15 @@ const MIN_DATE_WIDTH_PCT = 10;
 
 const ONE_HOUR_MSEC = 60 * 60 * 1000;
 
+export const CONSTANTS = {
+  ROW_HEIGHT,
+  DATE_TIME_HEIGHT,
+  TIME_HEADER_HEIGHT,
+  ONE_HOUR_MSEC,
+  EMPTY_STATE_HEIGHT,
+  LEFT_SIDE_SPACE_ALLOTTED,
+};
+
 export type TimelineRun = {
   id: string;
   status: RunStatus | 'SCHEDULED';
@@ -320,6 +329,7 @@ interface TimeDividersProps {
   height: number;
   interval: number;
   range: [number, number];
+  now?: number;
 }
 
 const dateTimeOptions: Intl.DateTimeFormatOptions = {
@@ -335,12 +345,17 @@ const dateTimeOptionsWithTimezone: Intl.DateTimeFormatOptions = {
   timeZoneName: 'short',
 };
 
+const timeOnlyOptionsWithMinute: Intl.DateTimeFormatOptions = {
+  hour: 'numeric',
+  minute: 'numeric',
+};
+
 const timeOnlyOptions: Intl.DateTimeFormatOptions = {
   hour: 'numeric',
 };
 
-const TimeDividers = (props: TimeDividersProps) => {
-  const {interval, range, height} = props;
+export const TimeDividers = (props: TimeDividersProps) => {
+  const {interval, range, height, now: _now} = props;
   const [start, end] = range;
   const formatDateTime = useFormatDateTime();
 
@@ -392,7 +407,10 @@ const TimeDividers = (props: TimeDividersProps) => {
       .map((_, ii) => {
         const time = firstMarker + ii * interval;
         const date = new Date(time);
-        const label = formatDateTime(date, timeOnlyOptions).replace(' ', '');
+        const label =
+          interval < ONE_HOUR_MSEC
+            ? formatDateTime(date, timeOnlyOptionsWithMinute).replace(' ', '')
+            : formatDateTime(date, timeOnlyOptions).replace(' ', '');
         return {
           label,
           key: date.toString(),
@@ -402,7 +420,7 @@ const TimeDividers = (props: TimeDividersProps) => {
       .filter((marker) => marker.left > 0);
   }, [end, start, interval, formatDateTime]);
 
-  const now = Date.now();
+  const now = _now || Date.now();
   const nowLeft = `${(((now - start) / (end - start)) * 100).toPrecision(3)}%`;
 
   return (
@@ -564,7 +582,7 @@ const RunTimelineRow = ({
   }
 
   return (
-    <Row $height={height} $start={top}>
+    <TimelineRowContainer $height={height} $start={top}>
       <JobName>
         <Icon name={job.jobType === 'asset' ? 'asset' : 'job'} />
         <div style={{width: LABEL_WIDTH}}>
@@ -610,11 +628,11 @@ const RunTimelineRow = ({
           );
         })}
       </RunChunks>
-    </Row>
+    </TimelineRowContainer>
   );
 };
 
-const RunsEmptyOrLoading = (props: {loading: boolean; includesTicks: boolean}) => {
+export const RunsEmptyOrLoading = (props: {loading: boolean; includesTicks: boolean}) => {
   const {loading, includesTicks} = props;
 
   const content = () => {
@@ -661,7 +679,7 @@ const RunsEmptyOrLoading = (props: {loading: boolean; includesTicks: boolean}) =
 
 type RowProps = {$height: number; $start: number};
 
-const Row = styled.div.attrs<RowProps>(({$height, $start}) => ({
+export const TimelineRowContainer = styled.div.attrs<RowProps>(({$height, $start}) => ({
   style: {
     height: `${$height}px`,
     transform: `translateY(${$start}px)`,
@@ -699,7 +717,7 @@ const JobName = styled.div`
   width: ${LEFT_SIDE_SPACE_ALLOTTED}px;
 `;
 
-const RunChunks = styled.div`
+export const RunChunks = styled.div`
   flex: 1;
   position: relative;
   height: ${ROW_HEIGHT}px;
@@ -710,7 +728,7 @@ interface ChunkProps {
   $multiple: boolean;
 }
 
-const RunChunk = styled.div<ChunkProps>`
+export const RunChunk = styled.div<ChunkProps>`
   align-items: center;
   background: ${({$background}) => $background};
   border-radius: 1px;
