@@ -1,4 +1,6 @@
+import uuid
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, NamedTuple, Optional, Set, Union
 
 from pydantic import PrivateAttr
@@ -46,6 +48,7 @@ class BlueprintDefinitions(NamedTuple):
     executor: Optional[Union[ExecutorDefinition, Executor]] = None
     loggers: Optional[Mapping[str, LoggerDefinition]] = None
     asset_checks: Optional[Iterable[AssetChecksDefinition]] = None
+    blueprints: Optional[Iterable["Blueprint"]] = None
 
     def to_definitions(self) -> Definitions:
         return Definitions(
@@ -56,6 +59,7 @@ class BlueprintDefinitions(NamedTuple):
             executor=self.executor,
             loggers=self.loggers,
             asset_checks=self.asset_checks,
+            blueprints=self.blueprints,
         )
 
     @staticmethod
@@ -73,6 +77,7 @@ class BlueprintDefinitions(NamedTuple):
         sensors = []
         jobs = []
         asset_checks = []
+        blueprints = []
 
         resources = {}
         resource_key_indexes: Dict[str, int] = {}
@@ -87,6 +92,7 @@ class BlueprintDefinitions(NamedTuple):
             schedules.extend(def_set.schedules or [])
             sensors.extend(def_set.sensors or [])
             jobs.extend(def_set.jobs or [])
+            blueprints.extend(def_set.blueprints or [])
 
             for resource_key, resource_value in (def_set.resources or {}).items():
                 if resource_key in resources:
@@ -123,7 +129,13 @@ class BlueprintDefinitions(NamedTuple):
             executor=executor,
             loggers=loggers,
             asset_checks=asset_checks,
+            blueprints=blueprints,
         )
+
+
+def blueprint_id_from_file_path(file_path: Path) -> str:
+    """Generate a stable ID for a blueprint based on the file path."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, str(file_path)))
 
 
 class Blueprint(DagsterModel, ABC, HasSourcePositionAndKeyPath):
@@ -135,6 +147,7 @@ class Blueprint(DagsterModel, ABC, HasSourcePositionAndKeyPath):
     - A build_defs implementation that generates Dagster Definitions from field values
     """
 
+    _id: str = PrivateAttr(default_factory=lambda: str(uuid.uuid4()))
     _used_env_vars: Set[str] = PrivateAttr(set())
 
     @abstractmethod
@@ -143,7 +156,11 @@ class Blueprint(DagsterModel, ABC, HasSourcePositionAndKeyPath):
 
     def build_defs_add_context_to_errors(self) -> BlueprintDefinitions:
         try:
-            return check.inst(self.build_defs(), BlueprintDefinitions)
+            defs = check.inst(self.build_defs(), BlueprintDefinitions)
+            defs_with_blueprint = BlueprintDefinitions.merge(
+                defs, BlueprintDefinitions(blueprints=[self])
+            )
+            return defs_with_blueprint
         except Exception as e:
             source_pos = None
             if (
@@ -161,5 +178,14 @@ class Blueprint(DagsterModel, ABC, HasSourcePositionAndKeyPath):
                 f"Error when building definitions from config with type {cls_name} at {source_pos}"
             ) from e
 
-    def with_used_env_vars(self, env_vars: Set[str]) -> "Blueprint":
-        return self.copy(update={"_used_env_vars": env_vars})
+    def with_load_metadata(self, id: str, env_vars: Set[str]) -> "Blueprint":
+        return self.copy(
+            update=dict(
+                _id=id,
+                _used_env_vars=env_vars,
+            )
+        )
+
+    @property
+    def id(self) -> str:
+        return self._id
