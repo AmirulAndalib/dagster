@@ -2165,7 +2165,7 @@ class TimeWindowPartitionsSubset(
             num_partitions=None,
         )
 
-    @property
+    @cached_property
     def included_time_windows(self) -> Sequence[TimeWindow]:
         return self._asdict()["included_time_windows"]
 
