@@ -8,15 +8,11 @@ from dagster._core.definitions.asset_spec import (
     AssetSpec,
 )
 from dagster._core.definitions.assets import AssetsDefinition
-from dagster._core.definitions.decorators.asset_decorator import asset, multi_asset
-from dagster._core.definitions.events import Output
+from dagster._core.definitions.op_definition import OpDefinition
 from dagster._core.definitions.source_asset import (
-    SYSTEM_METADATA_KEY_SOURCE_ASSET_OBSERVATION,
     SourceAsset,
     wrap_source_asset_observe_fn_in_op_compute_fn,
 )
-from dagster._core.errors import DagsterInvariantViolationError
-from dagster._core.execution.context.compute import AssetExecutionContext
 from dagster._utils.warnings import disable_dagster_warnings
 
 
@@ -101,47 +97,55 @@ def external_assets_from_specs(specs: Sequence[AssetSpec]) -> List[AssetsDefinit
             "skippable must be False since it is ignored and False is the default",
         )
 
-        @multi_asset(
-            name=spec.key.to_python_identifier(),
-            specs=[
-                AssetSpec(
-                    key=spec.key,
-                    description=spec.description,
-                    group_name=spec.group_name,
-                    freshness_policy=spec.freshness_policy,
-                    metadata={
-                        **(spec.metadata or {}),
-                        **{
-                            SYSTEM_METADATA_KEY_ASSET_EXECUTION_TYPE: (
-                                AssetExecutionType.UNEXECUTABLE.value
-                            )
-                        },
-                    },
-                    deps=spec.deps,
+        with disable_dagster_warnings():
+            assets_defs.append(
+                AssetsDefinition(
+                    specs=[
+                        AssetSpec(
+                            key=spec.key,
+                            description=spec.description,
+                            group_name=spec.group_name,
+                            freshness_policy=spec.freshness_policy,
+                            metadata={
+                                **(spec.metadata or {}),
+                                **{
+                                    SYSTEM_METADATA_KEY_ASSET_EXECUTION_TYPE: (
+                                        AssetExecutionType.UNEXECUTABLE.value
+                                    )
+                                },
+                                "dagster/io_manager_key": "io_manager",
+                            },
+                            deps=spec.deps,
+                        )
+                    ],
                 )
-            ],
-        )
-        def _external_assets_def(context: AssetExecutionContext) -> None:
-            raise DagsterInvariantViolationError(
-                "You have attempted to execute an unexecutable asset"
-                f" {context.asset_key.to_user_string}."
             )
-
-        assets_defs.append(_external_assets_def)
 
     return assets_defs
 
 
 def create_external_asset_from_source_asset(source_asset: SourceAsset) -> AssetsDefinition:
+    if source_asset.observe_fn is not None:
+        execution_type = AssetExecutionType.OBSERVATION.value
+        keys_by_output_name = {"result": source_asset.key}
+        node_def = OpDefinition(
+            name=source_asset.key.to_python_identifier(),
+            compute_fn=wrap_source_asset_observe_fn_in_op_compute_fn(source_asset),
+            # We need to access the raw attribute because the property will return a computed value that
+            # includes requirements for the io manager. Those requirements will be inferred again when
+            # we create an AssetsDefinition.
+            required_resource_keys=source_asset._required_resource_keys,  # noqa: SLF001,
+        )
+    else:
+        execution_type = AssetExecutionType.UNEXECUTABLE.value
+        keys_by_output_name = {}
+        node_def = None
+
     observe_interval = source_asset.auto_observe_interval_minutes
-    execution_type = (
-        AssetExecutionType.UNEXECUTABLE.value
-        if source_asset.observe_fn is None
-        else AssetExecutionType.OBSERVATION.value
-    )
     metadata = {
         **source_asset.raw_metadata,
         SYSTEM_METADATA_KEY_ASSET_EXECUTION_TYPE: execution_type,
+        "dagster/io_manager_key": source_asset.io_manager_key or "io_manager",
         **(
             {SYSTEM_METADATA_KEY_AUTO_OBSERVE_INTERVAL_MINUTES: observe_interval}
             if observe_interval
@@ -150,38 +154,26 @@ def create_external_asset_from_source_asset(source_asset: SourceAsset) -> Assets
     }
 
     with disable_dagster_warnings():
-
-        @asset(
+        spec = AssetSpec(
             key=source_asset.key,
             metadata=metadata,
             group_name=source_asset.group_name,
             description=source_asset.description,
+            tags=source_asset.tags,
+            freshness_policy=source_asset.freshness_policy,
+            deps=[],
+            owners=[],
+        )
+
+        return AssetsDefinition(
+            specs=[spec],
+            keys_by_output_name=keys_by_output_name,
+            node_def=node_def,
             partitions_def=source_asset.partitions_def,
-            io_manager_key=source_asset.io_manager_key,
             # We don't pass the `io_manager_def` because it will already be present in
             # `resource_defs` (it is added during `SourceAsset` initialization).
             resource_defs=source_asset.resource_defs,
-            # We need to access the raw attribute because the property will return a computed value that
-            # includes requirements for the io manager. Those requirements will be inferred again when
-            # we create an AssetsDefinition.
-            required_resource_keys=source_asset._required_resource_keys,  # noqa: SLF001
-            freshness_policy=source_asset.freshness_policy,
-            tags=source_asset.tags,
         )
-        def _shim_assets_def(context: AssetExecutionContext):
-            if not source_asset.observe_fn:
-                raise NotImplementedError(f"Asset {source_asset.key} is not executable")
-
-            op_function = wrap_source_asset_observe_fn_in_op_compute_fn(source_asset)
-            return_value = op_function.decorated_fn(context)
-            check.invariant(
-                isinstance(return_value, Output)
-                and SYSTEM_METADATA_KEY_SOURCE_ASSET_OBSERVATION in return_value.metadata,
-                "The wrapped decorated_fn should return an Output with a special metadata key.",
-            )
-            return return_value
-
-    return _shim_assets_def
 
 
 # Create unexecutable assets defs for each asset key in the provided assets def. This is used to
@@ -192,4 +184,7 @@ def create_unexecutable_external_assets_from_assets_def(
     if not assets_def.is_executable:
         return [assets_def]
     else:
-        return [create_external_asset_from_source_asset(sa) for sa in assets_def.to_source_assets()]
+        with disable_dagster_warnings():
+            return [
+                create_external_asset_from_source_asset(sa) for sa in assets_def.to_source_assets()
+            ]

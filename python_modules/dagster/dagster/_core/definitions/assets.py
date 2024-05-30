@@ -103,7 +103,7 @@ class AssetsDefinition(ResourceAddable, RequiresResources, IHasInternalInit):
         "owners_by_key",
     }
 
-    _node_def: NodeDefinition
+    _node_def: Optional[NodeDefinition]
     _keys_by_input_name: Mapping[str, AssetKey]
     _keys_by_output_name: Mapping[str, AssetKey]
     _partitions_def: Optional[PartitionsDefinition]
@@ -123,9 +123,9 @@ class AssetsDefinition(ResourceAddable, RequiresResources, IHasInternalInit):
     def __init__(
         self,
         *,
-        keys_by_input_name: Mapping[str, AssetKey],
-        keys_by_output_name: Mapping[str, AssetKey],
-        node_def: NodeDefinition,
+        keys_by_input_name: Mapping[str, AssetKey] = {},
+        keys_by_output_name: Mapping[str, AssetKey] = {},
+        node_def: Optional[NodeDefinition] = None,
         partitions_def: Optional[PartitionsDefinition] = None,
         partition_mappings: Optional[Mapping[AssetKey, PartitionMapping]] = None,
         asset_deps: Optional[Mapping[AssetKey, AbstractSet[AssetKey]]] = None,
@@ -184,40 +184,11 @@ class AssetsDefinition(ResourceAddable, RequiresResources, IHasInternalInit):
             value_type=AssetCheckSpec,
         )
 
-        all_asset_keys = set(keys_by_output_name.values())
-
         self._partitions_def = partitions_def
-        if partition_mappings:
-            _validate_partition_mappings(
-                partition_mappings=partition_mappings,
-                input_asset_keys=set(keys_by_input_name.values()),
-                all_asset_keys=all_asset_keys,
-            )
 
-        if asset_deps:
-            check.invariant(
-                set(asset_deps.keys()) == all_asset_keys,
-                "The set of asset keys with dependencies specified in the asset_deps argument must "
-                "equal the set of asset keys produced by this AssetsDefinition. \n"
-                f"asset_deps keys: {set(asset_deps.keys())} \n"
-                f"expected keys: {all_asset_keys}",
-            )
         self._resource_defs = wrap_resources_for_execution(
             check.opt_mapping_param(resource_defs, "resource_defs")
         )
-
-        self._selected_asset_keys, self._selected_asset_check_keys = _resolve_selections(
-            all_asset_keys=all_asset_keys,
-            all_check_keys={spec.key for spec in (check_specs_by_output_name or {}).values()},
-            selected_asset_keys=selected_asset_keys,
-            selected_asset_check_keys=selected_asset_check_keys,
-        )
-
-        self._check_specs_by_key = {
-            spec.key: spec
-            for spec in self._check_specs_by_output_name.values()
-            if spec.key in self._selected_asset_check_keys
-        }
 
         self._can_subset = can_subset
 
@@ -252,6 +223,26 @@ class AssetsDefinition(ResourceAddable, RequiresResources, IHasInternalInit):
             resolved_specs = specs
 
         else:
+            all_asset_keys = set(keys_by_output_name.values())
+
+            if asset_deps:
+                check.invariant(
+                    set(asset_deps.keys()) == all_asset_keys,
+                    "The set of asset keys with dependencies specified in the asset_deps argument must "
+                    "equal the set of asset keys produced by this AssetsDefinition. \n"
+                    f"asset_deps keys: {set(asset_deps.keys())} \n"
+                    f"expected keys: {all_asset_keys}",
+                )
+
+            if partition_mappings:
+                _validate_partition_mappings(
+                    partition_mappings=partition_mappings,
+                    input_asset_keys=set(keys_by_input_name.values()),
+                    all_asset_keys=all_asset_keys,
+                )
+
+            check.invariant(node_def, "Must provide node_def if not providing specs")
+
             resolved_specs = _asset_specs_from_attr_key_params(
                 all_asset_keys=all_asset_keys,
                 keys_by_input_name=keys_by_input_name,
@@ -277,12 +268,25 @@ class AssetsDefinition(ResourceAddable, RequiresResources, IHasInternalInit):
 
             group_name = normalize_group_name(spec.group_name)
 
-            output_def, _ = node_def.resolve_output_to_origin(output_names_by_key[spec.key], None)
-            metadata = {**output_def.metadata, **(spec.metadata or {})}
+            if node_def is not None:
+                output_def, _ = node_def.resolve_output_to_origin(
+                    output_names_by_key[spec.key], None
+                )
+                node_def_description = node_def.description
+                output_def_metadata = output_def.metadata
+                output_def_description = output_def.description
+                output_def_code_version = output_def.code_version
+            else:
+                node_def_description = None
+                output_def_metadata = {}
+                output_def_description = None
+                output_def_code_version = None
+
+            metadata = {**output_def_metadata, **(spec.metadata or {})}
             # We construct description from three sources of truth here. This
             # highly unfortunate. See commentary in @multi_asset's call to dagster_internal_init.
-            description = spec.description or output_def.description or node_def.description
-            code_version = spec.code_version or output_def.code_version
+            description = spec.description or output_def_description or node_def_description
+            code_version = spec.code_version or output_def_code_version
 
             check.invariant(
                 not (
@@ -303,9 +307,26 @@ class AssetsDefinition(ResourceAddable, RequiresResources, IHasInternalInit):
                 )
             )
 
+        self._specs_by_key = {spec.key: spec for spec in normalized_specs}
+
         self._partition_mappings = get_partition_mappings_from_deps(
-            {}, [dep for spec in normalized_specs for dep in spec.deps], node_def.name
+            {},
+            [dep for spec in normalized_specs for dep in spec.deps],
+            node_def.name if node_def else "external assets",
         )
+
+        self._selected_asset_keys, self._selected_asset_check_keys = _resolve_selections(
+            all_asset_keys=self._specs_by_key.keys(),
+            all_check_keys={spec.key for spec in (check_specs_by_output_name or {}).values()},
+            selected_asset_keys=selected_asset_keys,
+            selected_asset_check_keys=selected_asset_check_keys,
+        )
+
+        self._check_specs_by_key = {
+            spec.key: spec
+            for spec in self._check_specs_by_output_name.values()
+            if spec.key in self._selected_asset_check_keys
+        }
 
         _validate_self_deps(
             input_keys=[
@@ -320,8 +341,6 @@ class AssetsDefinition(ResourceAddable, RequiresResources, IHasInternalInit):
             partition_mappings=self._partition_mappings,
             partitions_def=self._partitions_def,
         )
-
-        self._specs_by_key = {spec.key: spec for spec in normalized_specs}
 
     def dagster_internal_init(
         *,
@@ -360,8 +379,8 @@ class AssetsDefinition(ResourceAddable, RequiresResources, IHasInternalInit):
         from .graph_definition import GraphDefinition
 
         # defer to GraphDefinition.__call__ for graph backed assets, or if invoked in composition
-        if isinstance(self.node_def, GraphDefinition) or is_in_composition():
-            return self._node_def(*args, **kwargs)
+        if isinstance(self._node_def, GraphDefinition) or is_in_composition():
+            return check.not_none(self._node_def)(*args, **kwargs)
 
         # invoke against self to allow assets def information to be used
         return direct_invocation_result(self, *args, **kwargs)
@@ -779,7 +798,10 @@ class AssetsDefinition(ResourceAddable, RequiresResources, IHasInternalInit):
         """NodeDefinition: Returns the OpDefinition or GraphDefinition that is used to materialize
         the assets in this AssetsDefinition.
         """
-        return self._node_def
+        return check.not_none(self._node_def, "This AssetsDefinition has no node_def")
+
+    def has_node_def(self) -> bool:
+        return self._node_def is not None
 
     @public
     @property
@@ -1390,6 +1412,12 @@ class AssetsDefinition(ResourceAddable, RequiresResources, IHasInternalInit):
             )
 
     def get_io_manager_key_for_asset_key(self, key: AssetKey) -> str:
+        io_manager_key_from_metadata = self._specs_by_key[key].metadata.get(
+            "dagster/io_manager_key"
+        )
+        if io_manager_key_from_metadata:
+            return io_manager_key_from_metadata
+
         output_name = self.get_output_name_for_asset_key(key)
         return self.node_def.resolve_output_to_origin(
             output_name, NodeHandle(self.node_def.name, parent=None)
