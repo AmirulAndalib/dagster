@@ -1,8 +1,8 @@
 ## Vendored toposort module
 
-"""
-* Vendored from https://gitlab.com/ericvsmith/toposort/-/blob/master/src/toposort.py?ref_type=heads on 2024-05-30
-* pyproject.toml at time of vendoring:
+"""Vendored from https://gitlab.com/ericvsmith/toposort/-/blob/master/src/toposort.py?ref_type=heads on 2024-05-30.
+
+pyproject.toml at time of vendoring:
 
 [build-system]
 requires = [
