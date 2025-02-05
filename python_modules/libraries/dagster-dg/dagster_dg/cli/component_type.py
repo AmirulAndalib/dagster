@@ -1,18 +1,19 @@
 import json
-import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import click
+from rich.console import Console
+from rich.table import Table
 
 from dagster_dg.cli.global_options import dg_global_options
-from dagster_dg.component import RemoteComponentRegistry
+from dagster_dg.component import RemoteComponentKey, RemoteComponentRegistry
 from dagster_dg.config import normalize_cli_config
 from dagster_dg.context import DgContext
 from dagster_dg.docs import markdown_for_component_type, render_markdown_in_browser
 from dagster_dg.scaffold import scaffold_component_type
-from dagster_dg.utils import DgClickCommand, DgClickGroup
+from dagster_dg.utils import DgClickCommand, DgClickGroup, exit_with_error
 
 
 @click.group(name="component-type", cls=DgClickGroup)
@@ -38,19 +39,11 @@ def component_type_scaffold_command(
     will be placed in submodule `<code_location_name>.lib.<name>`.
     """
     cli_config = normalize_cli_config(global_options, context)
-    dg_context = DgContext.from_config_file_discovery_and_cli_config(Path.cwd(), cli_config)
-    if not dg_context.is_code_location:
-        click.echo(
-            click.style(
-                "This command must be run inside a Dagster code location directory.", fg="red"
-            )
-        )
-        sys.exit(1)
+    dg_context = DgContext.for_component_library_environment(Path.cwd(), cli_config)
     registry = RemoteComponentRegistry.from_dg_context(dg_context)
-    full_component_name = f"{dg_context.root_package_name}.{name}"
-    if registry.has(full_component_name):
-        click.echo(click.style(f"A component type named `{name}` already exists.", fg="red"))
-        sys.exit(1)
+    component_key = RemoteComponentKey(name=name, package=dg_context.root_package_name)
+    if registry.has_global(component_key):
+        exit_with_error(f"A component type named `{name}` already exists.")
 
     scaffold_component_type(dg_context, name)
 
@@ -71,15 +64,13 @@ def component_type_docs_command(
 ) -> None:
     """Get detailed information on a registered Dagster component type."""
     cli_config = normalize_cli_config(global_options, context)
-    dg_context = DgContext.from_config_file_discovery_and_cli_config(Path.cwd(), cli_config)
+    dg_context = DgContext.for_defined_registry_environment(Path.cwd(), cli_config)
     registry = RemoteComponentRegistry.from_dg_context(dg_context)
-    if not registry.has(component_type):
-        click.echo(
-            click.style(f"No component type `{component_type}` could be resolved.", fg="red")
-        )
-        sys.exit(1)
+    component_key = RemoteComponentKey.from_string(component_type)
+    if not registry.has_global(component_key):
+        exit_with_error(f"No component type `{component_type}` could be resolved.")
 
-    render_markdown_in_browser(markdown_for_component_type(registry.get(component_type)))
+    render_markdown_in_browser(markdown_for_component_type(registry.get_global(component_key)))
 
 
 # ########################
@@ -104,23 +95,17 @@ def component_type_info_command(
 ) -> None:
     """Get detailed information on a registered Dagster component type."""
     cli_config = normalize_cli_config(global_options, context)
-    dg_context = DgContext.from_config_file_discovery_and_cli_config(Path.cwd(), cli_config)
+    dg_context = DgContext.for_defined_registry_environment(Path.cwd(), cli_config)
     registry = RemoteComponentRegistry.from_dg_context(dg_context)
-    if not registry.has(component_type):
-        click.echo(
-            click.style(f"No component type `{component_type}` could be resolved.", fg="red")
-        )
-        sys.exit(1)
+    component_key = RemoteComponentKey.from_string(component_type)
+    if not registry.has_global(component_key):
+        exit_with_error(f"No component type `{component_type}` could be resolved.")
     elif sum([description, scaffold_params_schema, component_params_schema]) > 1:
-        click.echo(
-            click.style(
-                "Only one of --description, --scaffold-params-schema, and --component-params-schema can be specified.",
-                fg="red",
-            )
+        exit_with_error(
+            "Only one of --description, --scaffold-params-schema, and --component-params-schema can be specified."
         )
-        sys.exit(1)
 
-    component_type_metadata = registry.get(component_type)
+    component_type_metadata = registry.get_global(component_key)
 
     if description:
         if component_type_metadata.description:
@@ -167,10 +152,13 @@ def _serialize_json_schema(schema: Mapping[str, Any]) -> str:
 def component_type_list(context: click.Context, **global_options: object) -> None:
     """List registered Dagster components in the current code location environment."""
     cli_config = normalize_cli_config(global_options, context)
-    dg_context = DgContext.from_config_file_discovery_and_cli_config(Path.cwd(), cli_config)
+    dg_context = DgContext.for_defined_registry_environment(Path.cwd(), cli_config)
     registry = RemoteComponentRegistry.from_dg_context(dg_context)
-    for key in sorted(registry.keys()):
-        click.echo(key)
-        component_type = registry.get(key)
-        if component_type.summary:
-            click.echo(f"    {component_type.summary}")
+
+    table = Table(border_style="dim")
+    table.add_column("Component Type", style="bold cyan", no_wrap=True)
+    table.add_column("Summary")
+    for key in sorted(registry.global_keys(), key=lambda k: k.to_string()):
+        table.add_row(key.to_string(), registry.get_global(key).summary)
+    console = Console()
+    console.print(table)

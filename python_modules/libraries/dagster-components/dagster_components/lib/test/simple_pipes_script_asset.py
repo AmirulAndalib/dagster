@@ -9,7 +9,7 @@ from dagster._core.pipes.subprocess import PipesSubprocessClient
 from pydantic import BaseModel
 from typing_extensions import Self
 
-from dagster_components import Component, ComponentLoadContext, component_type
+from dagster_components import Component, ComponentLoadContext, registered_component_type
 from dagster_components.core.component_scaffolder import (
     ComponentScaffolder,
     ComponentScaffoldRequest,
@@ -25,7 +25,7 @@ class SimplePipesScriptAssetParams(BaseModel):
 
 class SimplePipesScriptAssetScaffolder(ComponentScaffolder):
     @classmethod
-    def get_params_schema_type(cls):
+    def get_schema(cls):
         return SimplePipesScriptAssetParams
 
     def scaffold(
@@ -47,7 +47,7 @@ context.report_asset_materialization(asset_key="{asset_key}")
 """
 
 
-@component_type(name="simple_pipes_script_asset")
+@registered_component_type(name="simple_pipes_script_asset")
 class SimplePipesScriptAsset(Component):
     """A simple asset that runs a Python script with the Pipes subprocess client.
 
@@ -59,15 +59,14 @@ class SimplePipesScriptAsset(Component):
         return SimplePipesScriptAssetScaffolder()
 
     @classmethod
-    def get_component_schema_type(cls):
+    def get_schema(cls):
         return SimplePipesScriptAssetParams
 
     @classmethod
-    def load(cls, context: "ComponentLoadContext") -> Self:
-        loaded_params = context.load_params(cls.get_component_schema_type())
+    def load(cls, params: SimplePipesScriptAssetParams, context: "ComponentLoadContext") -> Self:
         return cls(
-            asset_key=AssetKey.from_user_string(loaded_params.asset_key),
-            script_path=context.path / loaded_params.filename,
+            asset_key=AssetKey.from_user_string(params.asset_key),
+            script_path=context.path / params.filename,
         )
 
     def __init__(self, asset_key: AssetKey, script_path: Path):

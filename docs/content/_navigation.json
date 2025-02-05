@@ -382,6 +382,10 @@
                   }
                 ]
               },
+	      {
+                "title": "Dagster Pipes + PySpark",
+                "path": "/concepts/dagster-pipes/pyspark"
+              },
               {
                 "title": "Dagster Pipes + AWS ECS",
                 "path": "/concepts/dagster-pipes/aws-ecs"
@@ -393,6 +397,10 @@
               {
                 "title": "Dagster Pipes + AWS EMR",
                 "path": "/concepts/dagster-pipes/aws-emr"
+              },
+              {
+                "title": "Dagster Pipes + AWS EMR on EKS",
+                "path": "/concepts/dagster-pipes/aws-emr-containers"
               },
               {
                 "title": "Dagster Pipes + AWS EMR Serverless",
@@ -1681,10 +1689,6 @@
           {
             "title": "PySpark (dagster-pyspark)",
             "path": "/_apidocs/libraries/dagster-pyspark"
-          },
-          {
-            "title": "Shell (dagster-shell)",
-            "path": "/_apidocs/libraries/dagster-shell"
           },
           {
             "title": "Sigma (dagster-sigma)",

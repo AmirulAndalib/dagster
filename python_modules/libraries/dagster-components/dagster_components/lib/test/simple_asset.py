@@ -5,7 +5,7 @@ from dagster._core.execution.context.asset_execution_context import AssetExecuti
 from pydantic import BaseModel
 from typing_extensions import Self
 
-from dagster_components import Component, ComponentLoadContext, component_type
+from dagster_components import Component, ComponentLoadContext, registered_component_type
 from dagster_components.core.component_scaffolder import (
     ComponentScaffolder,
     DefaultComponentScaffolder,
@@ -17,12 +17,12 @@ class SimpleAssetParams(BaseModel):
     value: str
 
 
-@component_type(name="simple_asset")
+@registered_component_type(name="simple_asset")
 class SimpleAsset(Component):
     """A simple asset that returns a constant string value."""
 
     @classmethod
-    def get_component_schema_type(cls):
+    def get_schema(cls):
         return SimpleAssetParams
 
     @classmethod
@@ -30,11 +30,10 @@ class SimpleAsset(Component):
         return DefaultComponentScaffolder()
 
     @classmethod
-    def load(cls, context: "ComponentLoadContext") -> Self:
-        loaded_params = context.load_params(cls.get_component_schema_type())
+    def load(cls, params: SimpleAssetParams, context: "ComponentLoadContext") -> Self:
         return cls(
-            asset_key=AssetKey.from_user_string(loaded_params.asset_key),
-            value=loaded_params.value,
+            asset_key=AssetKey.from_user_string(params.asset_key),
+            value=params.value,
         )
 
     def __init__(self, asset_key: AssetKey, value: str):

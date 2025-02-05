@@ -10,15 +10,14 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, ClassVar, Optional, TypedDict, TypeVar, Union, cast
+from typing import Any, Callable, ClassVar, Optional, TypedDict, TypeVar, Union
 
-import click
 from dagster import _check as check
 from dagster._core.definitions.definitions_class import Definitions
 from dagster._core.errors import DagsterError
-from dagster._utils import pushd, snakecase
-from dagster._utils.pydantic_yaml import enrich_validation_errors_with_source_position
-from pydantic import BaseModel, TypeAdapter
+from dagster._record import record
+from dagster._utils import snakecase
+from pydantic import BaseModel
 from typing_extensions import Self
 
 from dagster_components.core.component_scaffolder import (
@@ -29,14 +28,16 @@ from dagster_components.core.component_scaffolder import (
 from dagster_components.core.schema.resolver import TemplatedValueResolver
 
 
-class ComponentDeclNode: ...
+class ComponentDeclNode(ABC):
+    @abstractmethod
+    def load(self, context: "ComponentLoadContext") -> Sequence["Component"]: ...
 
 
 class Component(ABC):
     name: ClassVar[Optional[str]] = None
 
     @classmethod
-    def get_component_schema_type(cls) -> Optional[type[BaseModel]]:
+    def get_schema(cls) -> Optional[type[BaseModel]]:
         return None
 
     @classmethod
@@ -51,7 +52,7 @@ class Component(ABC):
         return DefaultComponentScaffolder()
 
     @classmethod
-    def get_rendering_scope(cls) -> Mapping[str, Any]:
+    def get_additional_scope(cls) -> Mapping[str, Any]:
         return {}
 
     @abstractmethod
@@ -59,7 +60,7 @@ class Component(ABC):
 
     @classmethod
     @abstractmethod
-    def load(cls, context: "ComponentLoadContext") -> Self: ...
+    def load(cls, params: Optional[BaseModel], context: "ComponentLoadContext") -> Self: ...
 
     @classmethod
     def get_metadata(cls) -> "ComponentTypeInternalMetadata":
@@ -73,8 +74,8 @@ class Component(ABC):
                 f"Component {cls.__name__} is not scaffoldable: {scaffolder.message}"
             )
 
-        component_params = cls.get_component_schema_type()
-        scaffold_params = scaffolder.get_params_schema_type()
+        component_params = cls.get_schema()
+        scaffold_params = scaffolder.get_schema()
         return {
             "summary": clean_docstring.split("\n\n")[0] if clean_docstring else None,
             "description": clean_docstring if clean_docstring else None,
@@ -101,16 +102,6 @@ def _clean_docstring(docstring: str) -> str:
         return f"{first_line}\n{rest}"
 
 
-def _get_click_cli_help(command: click.Command) -> str:
-    with click.Context(command) as ctx:
-        formatter = click.formatting.HelpFormatter()
-        param_records = [
-            p.get_help_record(ctx) for p in command.get_params(ctx) if p.name != "help"
-        ]
-        formatter.write_dl([pr for pr in param_records if pr])
-        return formatter.getvalue()
-
-
 class ComponentTypeInternalMetadata(TypedDict):
     summary: Optional[str]
     description: Optional[str]
@@ -121,6 +112,20 @@ class ComponentTypeInternalMetadata(TypedDict):
 class ComponentTypeMetadata(ComponentTypeInternalMetadata):
     name: str
     package: str
+
+
+@record
+class ComponentTypeKey:
+    name: str
+    package: str
+
+    def to_string(self) -> str:
+        return f"{self.name}@{self.package}"
+
+    @staticmethod
+    def from_string(s: str) -> "ComponentTypeKey":
+        name, package = s.split("@")
+        return ComponentTypeKey(name=name, package=package)
 
 
 def get_entry_points_from_python_environment(group: str) -> Sequence[importlib.metadata.EntryPoint]:
@@ -155,7 +160,7 @@ class ComponentTypeRegistry:
             `dagster_components*`. Only one built-in  component library can be loaded at a time.
             Defaults to `dagster_components`, the standard set of published component types.
         """
-        component_types: dict[str, type[Component]] = {}
+        component_types: dict[ComponentTypeKey, type[Component]] = {}
         for entry_point in get_entry_points_from_python_environment(COMPONENTS_ENTRY_POINT_GROUP):
             # Skip built-in entry points that are not the specified builtin component library.
             if (
@@ -171,31 +176,36 @@ class ComponentTypeRegistry:
                     f"Value expected to be a module, got {root_module}."
                 )
             for component_type in get_registered_component_types_in_module(root_module):
-                key = f"{entry_point.name}.{get_component_type_name(component_type)}"
+                key = ComponentTypeKey(
+                    name=get_component_type_name(component_type), package=entry_point.name
+                )
                 component_types[key] = component_type
 
         return cls(component_types)
 
-    def __init__(self, component_types: dict[str, type[Component]]):
-        self._component_types: dict[str, type[Component]] = copy.copy(component_types)
+    def __init__(self, component_types: dict[ComponentTypeKey, type[Component]]):
+        self._component_types: dict[ComponentTypeKey, type[Component]] = copy.copy(component_types)
 
     @staticmethod
     def empty() -> "ComponentTypeRegistry":
         return ComponentTypeRegistry({})
 
-    def register(self, name: str, component_type: type[Component]) -> None:
-        if name in self._component_types:
-            raise DagsterError(f"There is an existing component registered under {name}")
-        self._component_types[name] = component_type
+    def register(self, key: ComponentTypeKey, component_type: type[Component]) -> None:
+        if key in self._component_types:
+            raise DagsterError(f"There is an existing component registered under {key}")
+        self._component_types[key] = component_type
 
-    def has(self, name: str) -> bool:
-        return name in self._component_types
+    def has(self, key: ComponentTypeKey) -> bool:
+        return key in self._component_types
 
-    def get(self, name: str) -> type[Component]:
-        return self._component_types[name]
+    def get(self, key: ComponentTypeKey) -> type[Component]:
+        return self._component_types[key]
 
-    def keys(self) -> Iterable[str]:
+    def keys(self) -> Iterable[ComponentTypeKey]:
         return self._component_types.keys()
+
+    def items(self) -> Iterable[tuple[ComponentTypeKey, type[Component]]]:
+        return self._component_types.items()
 
     def __repr__(self) -> str:
         return f"<ComponentRegistry {list(self._component_types.keys())}>"
@@ -211,7 +221,7 @@ def get_registered_component_types_in_module(module: ModuleType) -> Iterable[typ
             yield component
 
 
-T = TypeVar("T")
+T = TypeVar("T", bound=BaseModel)
 
 
 @dataclass
@@ -237,9 +247,12 @@ class ComponentLoadContext:
 
     @property
     def path(self) -> Path:
-        from dagster_components.core.component_decl_builder import YamlComponentDecl
+        from dagster_components.core.component_decl_builder import (
+            PythonComponentDecl,
+            YamlComponentDecl,
+        )
 
-        if not isinstance(self.decl_node, YamlComponentDecl):
+        if not isinstance(self.decl_node, (YamlComponentDecl, PythonComponentDecl)):
             check.failed(f"Unsupported decl_node type {type(self.decl_node)}")
 
         return self.decl_node.path
@@ -247,42 +260,20 @@ class ComponentLoadContext:
     def with_rendering_scope(self, rendering_scope: Mapping[str, Any]) -> "ComponentLoadContext":
         return dataclasses.replace(
             self,
-            templated_value_resolver=self.templated_value_resolver.with_context(**rendering_scope),
+            templated_value_resolver=self.templated_value_resolver.with_scope(**rendering_scope),
         )
 
     def for_decl_node(self, decl_node: ComponentDeclNode) -> "ComponentLoadContext":
         return dataclasses.replace(self, decl_node=decl_node)
 
-    def _raw_params(self) -> Optional[Mapping[str, Any]]:
-        from dagster_components.core.component_decl_builder import YamlComponentDecl
-
-        if not isinstance(self.decl_node, YamlComponentDecl):
-            check.failed(f"Unsupported decl_node type {type(self.decl_node)}")
-        return self.decl_node.component_file_model.params
-
-    def load_params(self, params_schema: type[T]) -> T:
-        from dagster_components.core.component_decl_builder import YamlComponentDecl
-
-        with pushd(str(self.path)):
-            preprocessed_params = self.templated_value_resolver.render_params(
-                self._raw_params(), params_schema
-            )
-            yaml_decl = cast(YamlComponentDecl, self.decl_node)
-
-            if yaml_decl.source_position_tree:
-                source_position_tree_of_params = yaml_decl.source_position_tree.children["params"]
-                with enrich_validation_errors_with_source_position(
-                    source_position_tree_of_params, ["params"]
-                ):
-                    return TypeAdapter(params_schema).validate_python(preprocessed_params)
-            else:
-                return TypeAdapter(params_schema).validate_python(preprocessed_params)
-
 
 COMPONENT_REGISTRY_KEY_ATTR = "__dagster_component_registry_key"
+COMPONENT_LOADER_FN_ATTR = "__dagster_component_loader_fn"
 
 
-def component_type(cls: Optional[type[Component]] = None, *, name: Optional[str] = None) -> Any:
+def registered_component_type(
+    cls: Optional[type[Component]] = None, *, name: Optional[str] = None
+) -> Any:
     """Decorator for registering a component type. You must annotate a component
     type with this decorator in order for it to be inspectable and loaded by tools.
 
@@ -323,3 +314,17 @@ def get_component_type_name(component_type: type[Component]) -> str:
         "Expected a registered component. Use @component to register a component.",
     )
     return getattr(component_type, COMPONENT_REGISTRY_KEY_ATTR)
+
+
+T_Component = TypeVar("T_Component", bound=Component)
+
+
+def component_loader(
+    fn: Callable[[ComponentLoadContext], T],
+) -> Callable[[ComponentLoadContext], T]:
+    setattr(fn, COMPONENT_LOADER_FN_ATTR, True)
+    return fn
+
+
+def is_component_loader(obj: Any) -> bool:
+    return getattr(obj, COMPONENT_LOADER_FN_ATTR, False)

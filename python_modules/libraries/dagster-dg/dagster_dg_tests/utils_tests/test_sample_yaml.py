@@ -1,17 +1,18 @@
 from collections.abc import Sequence
 from typing import Annotated
 
-from dagster_components import ComponentSchemaBaseModel, ResolvableFieldInfo
+from dagster_components import ResolvableFieldInfo, ResolvableModel
 from dagster_dg.docs import generate_sample_yaml
+from pydantic import BaseModel
 
 
-class SampleSubSchema(ComponentSchemaBaseModel):
+class SampleSubSchema(BaseModel):
     str_field: str
     int_field: int
 
 
-class SampleSchema(ComponentSchemaBaseModel):
-    sub_scoped: Annotated[SampleSubSchema, ResolvableFieldInfo(additional_scope={"outer_scope"})]
+class SampleSchema(ResolvableModel):
+    sub_scoped: Annotated[SampleSubSchema, ResolvableFieldInfo(required_scope={"outer_scope"})]
     sub_optional: SampleSubSchema
     sub_list: Sequence[SampleSubSchema]
 
@@ -26,8 +27,8 @@ def test_generate_sample_yaml():
 
 params:
   sub_scoped: # Available scope: {'outer_scope'}
-    str_field: '...'
-    int_field: 0
+    str_field: '...' # Available scope: {'outer_scope'}
+    int_field: 0 # Available scope: {'outer_scope'}
   sub_optional:
     str_field: '...'
     int_field: 0

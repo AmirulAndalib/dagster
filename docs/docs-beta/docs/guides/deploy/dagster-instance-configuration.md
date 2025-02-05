@@ -6,7 +6,7 @@ sidebar_position: 200
 
 :::note
 
-This article applies to Dagster Open Source (OSS) deployments. For information on Dagster+, see the [Dagster+ documentation](/dagster-plus/).
+This article applies to Dagster Open Source (OSS) deployments. For information on Dagster+, see the [Dagster+ documentation](/dagster-plus/deployment/management/settings/customizing-agent-settings).
 
 :::
 
@@ -20,8 +20,6 @@ Some important configuration, like [execution parallelism](/guides/operate/run-e
 
 :::
 
-{/* This heading is referenced in a call of DagsterUnmetExecutorRequirementsError, so be sure to update code link if this title changes. */}
-
 ## Default local behavior
 
 When a Dagster process like the Dagster webserver or Dagster CLI commands are launched, Dagster tries to load your instance. If the environment variable `DAGSTER_HOME` is set, Dagster looks for an instance config file at `$DAGSTER_HOME/dagster.yaml`. This file contains the configuration settings that make up the instance.
@@ -30,18 +28,20 @@ If `DAGSTER_HOME` isn't set, Dagster tools will use a temporary directory for st
 
 If `DAGSTER_HOME` is set but `dagster.yaml` isn't present or is empty, Dagster will persist data on the local filesystem, structured like the following:
 
-    $DAGSTER_HOME
-    ├── dagster.yaml
-    ├── history
-    │   ├── runs
-    │   │   ├── 00636713-98a9-461c-a9ac-d049407059cd.db
-    │   │   └── ...
-    │   └── runs.db
-    └── storage
-        ├── 00636713-98a9-461c-a9ac-d049407059cd
-        │   └── compute_logs
-        │       └── ...
-        └── ...
+```
+$DAGSTER_HOME
+├── dagster.yaml
+├── history
+│   ├── runs
+│   │   ├── 00636713-98a9-461c-a9ac-d049407059cd.db
+│   │   └── ...
+│   └── runs.db
+└── storage
+    ├── 00636713-98a9-461c-a9ac-d049407059cd
+    │   └── compute_logs
+    │       └── ...
+    └── ...
+```
 
 Here's a breakdown of the files and directories that are generated:
 

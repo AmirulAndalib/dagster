@@ -12,9 +12,16 @@ from dagster_dg.component import RemoteComponentRegistry
 from dagster_dg.config import DgConfig, DgPartialConfig, load_dg_config_file
 from dagster_dg.error import DgError
 from dagster_dg.utils import (
+    MISSING_DAGSTER_COMPONENTS_ERROR_MESSAGE,
+    NOT_CODE_LOCATION_ERROR_MESSAGE,
+    NOT_COMPONENT_LIBRARY_ERROR_MESSAGE,
+    NOT_DEPLOYMENT_ERROR_MESSAGE,
     ensure_loadable_path,
+    exit_with_error,
+    get_path_for_module,
     get_path_for_package,
     get_uv_command_env,
+    is_executable_available,
     is_package_installed,
     pushd,
 )
@@ -35,11 +42,54 @@ class DgContext:
     def __init__(self, config: DgConfig, root_path: Path):
         self.config = config
         self.root_path = root_path
-        if config.disable_cache or not config.use_dg_managed_environment:
+        if config.disable_cache or not self.use_dg_managed_environment:
             self._cache = None
         else:
             self._cache = DgCache.from_config(config)
         self.component_registry = RemoteComponentRegistry.empty()
+
+    @classmethod
+    def for_deployment_environment(cls, path: Path, cli_config: DgPartialConfig) -> Self:
+        context = cls.from_config_file_discovery_and_cli_config(path, cli_config)
+
+        # Commands that operate on a deployment need to be run inside a deployment context.
+        if not context.is_deployment:
+            exit_with_error(NOT_DEPLOYMENT_ERROR_MESSAGE)
+        return context
+
+    @classmethod
+    def for_code_location_environment(cls, path: Path, cli_config: DgPartialConfig) -> Self:
+        context = cls.from_config_file_discovery_and_cli_config(path, cli_config)
+
+        # Commands that operate on a code location need to be run (a) inside a code location
+        # context; and (b) with dagster-components available on $PATH.
+        if not context.is_code_location:
+            exit_with_error(NOT_CODE_LOCATION_ERROR_MESSAGE)
+        elif not is_executable_available("dagster-components"):
+            exit_with_error(MISSING_DAGSTER_COMPONENTS_ERROR_MESSAGE)
+        return context
+
+    @classmethod
+    def for_component_library_environment(cls, path: Path, cli_config: DgPartialConfig) -> Self:
+        context = cls.from_config_file_discovery_and_cli_config(path, cli_config)
+
+        # Commands that operate on a component library need to be run (a) inside a component
+        # library context; and (b) with dagster-components available on $PATH.
+        if not context.is_component_library:
+            exit_with_error(NOT_COMPONENT_LIBRARY_ERROR_MESSAGE)
+        elif not is_executable_available("dagster-components"):
+            exit_with_error(MISSING_DAGSTER_COMPONENTS_ERROR_MESSAGE)
+        return context
+
+    @classmethod
+    def for_defined_registry_environment(cls, path: Path, cli_config: DgPartialConfig) -> Self:
+        context = cls.from_config_file_discovery_and_cli_config(path, cli_config)
+
+        # Commands that access the component registry need to be run with dagster-components
+        # available on $PATH.
+        if not is_executable_available("dagster-components"):
+            exit_with_error(MISSING_DAGSTER_COMPONENTS_ERROR_MESSAGE)
+        return context
 
     @classmethod
     def from_config_file_discovery_and_cli_config(
@@ -86,6 +136,11 @@ class DgContext:
         env_hash = hash_paths(paths_to_hash)
         return ("_".join(path_parts), env_hash, data_type)
 
+    def get_cache_key_for_local_components(self, path: Path) -> tuple[str, str, str]:
+        env_hash = hash_paths([path], includes=["*.py"])
+        path_parts = [str(part) for part in path.parts if part != "/"]
+        return ("_".join(path_parts), env_hash, "local_component_registry")
+
     # ########################
     # ##### DEPLOYMENT METHODS
     # ########################
@@ -123,6 +178,12 @@ class DgContext:
     def get_code_location_names(self) -> Iterable[str]:
         return [loc.name for loc in sorted(self.code_location_root_path.iterdir())]
 
+    def get_code_location_path(self, name: str) -> Path:
+        return self.code_location_root_path / name
+
+    def get_code_location_root_module(self, name: str) -> Path:
+        return self.code_location_root_path / name
+
     # ########################
     # ##### GENERAL PYTHON PACKAGE METHODS
     # ########################
@@ -138,6 +199,20 @@ class DgContext:
     @property
     def is_code_location(self) -> bool:
         return self.config.is_code_location
+
+    @property
+    def code_location_name(self) -> str:
+        if not self.is_code_location:
+            raise DgError("`code_location_name` is only available in a code location context")
+        return self.root_path.name
+
+    @property
+    def code_location_python_executable(self) -> Path:
+        if not self.is_code_location:
+            raise DgError(
+                "`code_location_python_executable` is only available in a code location context"
+            )
+        return self.root_path / ".venv" / "bin" / "python"
 
     @cached_property
     def components_package_name(self) -> str:
@@ -164,6 +239,21 @@ class DgContext:
 
     def has_component(self, name: str) -> bool:
         return (self.components_path / name).is_dir()
+
+    @property
+    def definitions_package_name(self) -> str:
+        if not self.is_code_location:
+            raise DgError("`definitions_package_name` is only available in a code location context")
+        return f"{self.root_package_name}.definitions"
+
+    @cached_property
+    def definitions_path(self) -> Path:
+        with ensure_loadable_path(self.root_path):
+            if not is_package_installed(self.definitions_package_name):
+                raise DgError(
+                    f"Definitions package `{self.definitions_package_name}` is not installed in the current environment."
+                )
+            return Path(get_path_for_module(self.definitions_package_name))
 
     # ########################
     # ##### COMPONENT LIBRARY METHODS
@@ -200,7 +290,7 @@ class DgContext:
     # ########################
 
     def external_components_command(self, command: list[str]) -> str:
-        if self.config.use_dg_managed_environment:
+        if self.use_dg_managed_environment:
             code_location_command_prefix = ["uv", "run", "dagster-components"]
             env = get_uv_command_env()
         else:
@@ -224,3 +314,19 @@ class DgContext:
         with pushd(path):
             if not (path / "uv.lock").exists():
                 subprocess.run(["uv", "sync"], check=True, env=get_uv_command_env())
+
+    @property
+    def use_dg_managed_environment(self) -> bool:
+        return self.config.use_dg_managed_environment and self.is_code_location
+
+    def validate_deployment_command_environment(self) -> None:
+        """Commands that operate on a deployment need to be run inside a deployment context."""
+        if not self.is_deployment:
+            exit_with_error(NOT_DEPLOYMENT_ERROR_MESSAGE)
+
+    def validate_registry_command_environment(self) -> None:
+        """Commands that access the component registry need to be run with dagster-components
+        available on $PATH.
+        """
+        if not is_executable_available("dagster-components"):
+            exit_with_error(MISSING_DAGSTER_COMPONENTS_ERROR_MESSAGE)

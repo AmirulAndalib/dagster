@@ -7,31 +7,31 @@ from dagster._core.execution.context.asset_execution_context import AssetExecuti
 from pydantic import BaseModel
 from typing_extensions import Self
 
-from dagster_components import Component, ComponentLoadContext, component_type
+from dagster_components import Component, ComponentLoadContext, registered_component_type
 from dagster_components.core.component_scaffolder import DefaultComponentScaffolder
 from dagster_components.core.schema.metadata import ResolvableFieldInfo
 from dagster_components.core.schema.objects import (
     AssetAttributesModel,
     AssetSpecTransformModel,
-    OpSpecBaseModel,
+    OpSpecModel,
 )
 
 
 class ComplexAssetParams(BaseModel):
     value: str
-    op: Optional[OpSpecBaseModel] = None
+    op: Optional[OpSpecModel] = None
     asset_attributes: Annotated[
-        Optional[AssetAttributesModel], ResolvableFieldInfo(additional_scope={"node"})
+        Optional[AssetAttributesModel], ResolvableFieldInfo(required_scope={"node"})
     ] = None
     asset_transforms: Optional[Sequence[AssetSpecTransformModel]] = None
 
 
-@component_type(name="complex_schema_asset")
+@registered_component_type(name="complex_schema_asset")
 class ComplexSchemaAsset(Component):
     """An asset that has a complex params schema."""
 
     @classmethod
-    def get_component_schema_type(cls):
+    def get_schema(cls):
         return ComplexAssetParams
 
     @classmethod
@@ -39,19 +39,18 @@ class ComplexSchemaAsset(Component):
         return DefaultComponentScaffolder()
 
     @classmethod
-    def load(cls, context: "ComponentLoadContext") -> Self:
-        loaded_params = context.load_params(cls.get_component_schema_type())
+    def load(cls, params: ComplexAssetParams, context: "ComponentLoadContext") -> Self:
         return cls(
-            value=loaded_params.value,
-            op_spec=loaded_params.op,
-            asset_attributes=loaded_params.asset_attributes,
-            asset_transforms=loaded_params.asset_transforms or [],
+            value=params.value,
+            op_spec=params.op,
+            asset_attributes=params.asset_attributes,
+            asset_transforms=params.asset_transforms or [],
         )
 
     def __init__(
         self,
         value: str,
-        op_spec: Optional[OpSpecBaseModel],
+        op_spec: Optional[OpSpecModel],
         asset_attributes: Optional[AssetAttributesModel],
         asset_transforms: Sequence[AssetSpecTransformModel],
     ):
